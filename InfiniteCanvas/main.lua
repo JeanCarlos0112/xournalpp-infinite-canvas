@@ -1,33 +1,43 @@
 --[[
-  InfiniteCanvas — a Xournal++ plugin (tested on Xournal++ 1.3.4)
+  InfiniteCanvas 1.1.0 — a Xournal++ plugin (tested on Xournal++ 1.3.4)
   https://github.com/JeanCarlos0112/xournalpp-infinite-canvas
 
-  Turns the current page into a dotted "canvas" that grows to the right and
-  downwards as you write near its edges. The page starts small and only grows
-  when needed, so exports stay compact (use "Fit page to content" before
-  exporting to trim the empty space).
+  Makes pages grow to the right and downwards as you write near their edges.
+  Two kinds of growing pages:
+    * Free canvas (dotted): a plain page becomes a dotted canvas that starts
+      small and grows in big steps when you write near its edges.
+    * Marked paper page (lined, ruled, graph, staves...): the paper is kept
+      (lines, margins, size); the page only grows when you start writing in
+      its bottom margin (below the last line) or touch its right edge, in
+      small paper-like steps. The mark ("icanvas=1" in the page background
+      config) is saved in the .xopp file.
 
   Shortcuts (also in the Plugin menu):
-    Ctrl+Shift+N  New canvas: turn the current page into a dotted canvas
+    Ctrl+Shift+N  Plain page: turn it into a dotted canvas.
+                  Lined/graph/... page: mark it to grow by itself (press again to unmark).
     Ctrl+Shift+B  Expand downwards now
     Ctrl+Shift+M  Expand to the right now ("more width")
-    Ctrl+Shift+J  Fit the page to its content (shrinks or grows, plus padding)
+    Ctrl+Shift+J  Fit the page to its content (see infiniteCanvas_fit)
     Ctrl+Shift+U  Toggle auto-grow
 
   How auto-grow works:
     The Lua API has no events ("stroke finished") and no timers. The plugin uses
     LuaGObject (the lgi fork bundled with Xournal++ 1.3) to listen to GTK: a
     capture-phase GtkGestureDrag on the main window reports when the pen/mouse
-    is lifted; ~120 ms later the plugin checks whether the content got close
-    to the right/bottom edge and enlarges the page if so. The gesture never
-    claims the event sequence, so Xournal++ input is untouched.
-    Fallbacks: periodic polling if GTK can't be reached; manual shortcuts if
-    LuaGObject is missing.
+    is lifted; ~120 ms later the plugin checks the page and enlarges it if
+    needed. The gesture never claims the event sequence, so Xournal++ input is
+    untouched. Fallbacks: periodic polling if GTK can't be reached; manual
+    shortcuts if LuaGObject is missing.
+    On marked paper pages only strokes written after the page was marked (or
+    first seen in this session) count, so existing writing never triggers
+    growth.
 
   Limitations (Lua API):
     * Grows only to the right and downwards (existing strokes can't be moved).
     * Each resize is an undo step: Ctrl+Z undoes the growth before the stroke.
     * Auto-grow looks at the current layer (the one you are writing on).
+    * "Strokes already seen" is remembered per session only: after reopening a
+      file, the first stroke on a marked page is treated as new.
 
   View behaviour:
     * When the width grows, "Zoom > Fit" is switched off so your handwriting
@@ -44,14 +54,23 @@
 local CONFIG = {
   initialWidth     = 1200,  -- initial canvas size (pt)
   initialHeight    = 1600,
-  minWidth         = 600,   -- minimum size for "fit page to content"
-  minHeight        = 800,
+  minWidth         = 300,   -- minimum size for "fit page to content"
+  minHeight        = 200,
   edgeMargin       = 200,   -- content closer than this to an edge => grow
-  growStep         = 800,   -- how much to grow each time (pt)
-  fitPadding       = 300,   -- padding kept by "fit page to content"
+  paperEdgeMargin  = 8,     -- same, for paper pages marked with Ctrl+Shift+N (lined,
+                            -- graph...): the stroke has to (almost) touch the edge. On
+                            -- ruled paper the page grows downwards only when you start
+                            -- writing in the bottom margin, below the last line
+  growStep         = 800,   -- how much a free (dotted) canvas grows each time (pt)
+  paperGrowX       = 200,   -- how much a marked paper page grows to the right (pt)
+  paperGrowLines   = 10,    -- ...and downwards, in lines on ruled/lined paper
+  paperGrowY       = 240,   -- ...and downwards on other paper (graph...) (pt)
+  fitPadding       = 40,    -- space kept below/right of the last stroke by "fit page to content"
+  -- regular (non-canvas) pages keep their paper width when fitted; see paperWidthFor()
   background       = "dotted",
   autoGrow         = true,  -- auto-grow starts enabled
-  onlyDottedPages  = true,  -- auto-grow only touches dotted pages
+  autoGrowDotted   = true,  -- dotted pages always auto-grow; other pages only
+                            -- after Ctrl+Shift+N marks them (marker saved in the file)
   autoGrowPdfPages = false, -- experimental: also auto-grow pages with a PDF
                             -- background (the PDF is not stretched; the new
                             -- area is left unpainted)
@@ -119,6 +138,8 @@ local state = {
   gesture      = nil,  -- must stay referenced (GTK3 widgets don't own controllers)
   hookMode     = "none",  -- "pen", "polling", "waiting" or "none"
   warned       = false,
+  original     = {}, -- page key -> {w, h} before the plugin first resized it
+  base         = {}, -- page+layer key -> stroke count already seen (paper pages)
 }
 
 local GI = { tried = false }
@@ -162,6 +183,9 @@ local STRINGS = {
     no_gi_toggle = "Could not enable auto-grow (LuaGObject not found).\n"
                .. "Use Ctrl+Shift+B / Ctrl+Shift+M to expand.",
     no_setsize  = "This Xournal++ version has no app.setPageSize.\nPlease update Xournal++.",
+    marked      = "This page will now grow by itself as you write near its right or bottom edge.\n\n"
+               .. "Its paper (lines, margins, size) was kept. Press Ctrl+Shift+N again to turn this off.",
+    unmarked    = "This page no longer grows by itself.",
     pdf_page    = "This page has a PDF background, so it was not turned into a dotted canvas "
                .. "(that would remove the PDF).\n\nUse Ctrl+Shift+M / Ctrl+Shift+B to add space "
                .. "beside or below the PDF.",
@@ -179,6 +203,9 @@ local STRINGS = {
     no_gi_toggle = "Não foi possível ligar o crescimento automático (LuaGObject não encontrado).\n"
                .. "Use Ctrl+Shift+B / Ctrl+Shift+M para expandir.",
     no_setsize  = "Esta versão do Xournal++ não tem app.setPageSize.\nAtualize o Xournal++.",
+    marked      = "Esta página agora cresce sozinha quando você escreve perto da borda direita ou de baixo.\n\n"
+               .. "O papel (linhas, margens, tamanho) foi mantido. Aperte Ctrl+Shift+N de novo para desligar.",
+    unmarked    = "Esta página não cresce mais sozinha.",
     pdf_page    = "Esta página tem fundo de PDF, então não foi transformada em canvas pontilhado "
                .. "(isso apagaria o PDF).\n\nUse Ctrl+Shift+M / Ctrl+Shift+B para abrir espaço "
                .. "ao lado ou abaixo do PDF.",
@@ -230,11 +257,64 @@ local function hasPdfBackground(page)
   return (tonumber(page.pdfBackgroundPageNo) or 0) > 0
 end
 
+-- Pages marked with Ctrl+Shift+N carry "icanvas=1" in their background config.
+-- Xournal++ saves the config in the .xopp and ignores keys it doesn't know.
+local MARK_KEY = "icanvas"
+
+local function pageFormat(page)
+  return (tostring(page.pageTypeFormat or ""):gsub("^:", ""))
+end
+
+local function hasMark(page)
+  for k, v in tostring(page.pageTypeConfig or ""):gmatch("([^,=]+)=([^,]*)") do
+    if k == MARK_KEY and v == "1" then return true end
+  end
+  return false
+end
+
+local function configWithMark(config, on)
+  local parts = {}
+  for item in tostring(config or ""):gmatch("[^,]+") do
+    if not item:match("^" .. MARK_KEY .. "=") then parts[#parts + 1] = item end
+  end
+  if on then parts[#parts + 1] = MARK_KEY .. "=1" end
+  return table.concat(parts, ",")
+end
+
+-- Free canvas (dotted/plain): no paper layout, so its width can be trimmed freely.
+local function isFreeCanvas(page)
+  local fmt = pageFormat(page)
+  return fmt == "dotted" or fmt == "plain"
+end
+
 local function isCanvasPage(page)
   if hasPdfBackground(page) then return CONFIG.autoGrowPdfPages end
-  if not CONFIG.onlyDottedPages then return true end
-  local fmt = tostring(page.pageTypeFormat or "")
-  return fmt == "dotted" or fmt == ":dotted"
+  if hasMark(page) then return true end
+  return CONFIG.autoGrowDotted and pageFormat(page) == "dotted"
+end
+
+-- Ruled/lined paper (Xournal++ 1.3): lines at 80 + i * spacing, no lines in
+-- the last 60 pt (footer). Spacing defaults to 24 pt, config key "r1".
+local RULED_HEADER, RULED_FOOTER, RULED_SPACING = 80, 60, 24
+
+local function ruledSpacing(page)
+  local fmt = pageFormat(page)
+  if fmt ~= "ruled" and fmt ~= "lined" then return nil end
+  local sp = tonumber(tostring(page.pageTypeConfig or ""):match("r1=([%d%.]+)")) or RULED_SPACING
+  if sp <= 0 then sp = RULED_SPACING end
+  return sp
+end
+
+-- Height of a ruled page that has n lines below the header, plus the footer.
+local function ruledHeight(spacing, n)
+  return RULED_HEADER + n * spacing + RULED_FOOTER + 1
+end
+
+-- Rounds a height up so a ruled page ends on a whole line + footer.
+local function snapHeight(page, h)
+  local sp = ruledSpacing(page)
+  if not sp then return h end
+  return ruledHeight(sp, math.max(0, math.ceil((h - RULED_HEADER - RULED_FOOTER - 1) / sp)))
 end
 
 local function newExtent()
@@ -317,7 +397,7 @@ local function setSize(w, h)
     return false
   end
   local page = currentPage()
-  local widthChanged = page and math.floor(w + 0.5) ~= math.floor(page.pageWidth + 0.5)
+  local widthChanged = page and math.abs(w - page.pageWidth) > 0.01
   local zoom = nil
   if CONFIG.keepZoom and widthChanged then
     -- With "Zoom > Fit" on, Xournal++ re-fits the zoom when the width changes
@@ -335,7 +415,16 @@ local function setSize(w, h)
     end
   end
 
-  app.setPageSize(math.floor(w + 0.5), math.floor(h + 0.5))
+  if page then
+    local key = state.pageKey and state.pageKey()
+    if key and not state.original[key] then
+      state.original[key] = { w = page.pageWidth, h = page.pageHeight }
+    end
+  end
+  local function r2(v) return math.floor(v * 100 + 0.5) / 100 end
+  if page and math.abs(w - page.pageWidth) < 0.01 then w = page.pageWidth else w = r2(w) end
+  if page and math.abs(h - page.pageHeight) < 0.01 then h = page.pageHeight else h = r2(h) end
+  app.setPageSize(w, h)
 
   if zoom and app.setZoom then
     pcall(app.setZoom, zoom)
@@ -355,11 +444,29 @@ end
 
 -- Grows in whole steps until the margin is free again.
 -- Returns (changed?, newWidth, newHeight).
-local function growIfNeeded(page, maxX, maxY)
+local function growIfNeeded(page, maxX, maxY, below)
   local w, h = page.pageWidth, page.pageHeight
   local newW, newH = w, h
-  while maxX > newW - CONFIG.edgeMargin do newW = newW + CONFIG.growStep end
-  while maxY > newH - CONFIG.edgeMargin do newH = newH + CONFIG.growStep end
+  local marginX, marginY = CONFIG.edgeMargin, CONFIG.edgeMargin
+  if not isFreeCanvas(page) then
+    marginX = CONFIG.paperEdgeMargin
+    local sp = ruledSpacing(page)
+    marginY = sp and (RULED_FOOTER + sp) or CONFIG.paperEdgeMargin
+  end
+  local stepX, stepY = CONFIG.growStep, CONFIG.growStep
+  if not isFreeCanvas(page) then
+    stepX = CONFIG.paperGrowX
+    local sp = ruledSpacing(page)
+    stepY = sp and (CONFIG.paperGrowLines * sp) or CONFIG.paperGrowY
+  end
+  while maxX > newW - marginX do newW = newW + stepX end
+  if below ~= nil and ruledSpacing(page) and not isFreeCanvas(page) then
+    -- ruled paper: grow only when writing started below the last line
+    if below then newH = newH + stepY end
+  else
+    while maxY > newH - marginY do newH = newH + stepY end
+  end
+  if newH ~= h then newH = snapHeight(page, newH) end
   if newW ~= w or newH ~= h then
     return setSize(newW, newH), newW, newH
   end
@@ -369,6 +476,51 @@ end
 ----------------------------------------------------------------------
 -- Auto-grow check
 ----------------------------------------------------------------------
+local function baseKey()
+  local doc = app.getDocumentStructure()
+  local page = doc.pages[doc.currentPage]
+  return tostring(doc.xoppFilename or "") .. "#" .. tostring(doc.currentPage) .. "#L" .. tostring(page and page.currentLayer)
+end
+
+-- Remembers how many strokes the current layer has, so later checks only
+-- look at strokes written after this moment.
+local function setBaseline()
+  state.base[baseKey()] = #getList("getStrokes")
+end
+
+-- Extent of the strokes added since the last look, or nil if none.
+-- When the page was never seen and a pen was just lifted, the last stroke
+-- is taken as the new one.
+local function newStrokesExtent(justDrew, belowY)
+  local strokes = getList("getStrokes")
+  local key, n = baseKey(), #strokes
+  local base = state.base[key]
+  if base == nil then base = justDrew and math.max(0, n - 1) or n end
+  if base > n then base = n end -- strokes were erased
+  state.base[key] = n
+  if n == base then return nil end
+  local e = newExtent()
+  e.below = false
+  for i = base + 1, n do
+    local s = strokes[i]
+    local xs, ys, ps = s.x or {}, s.y or {}, s.pressure
+    local w = s.width or 1
+    local minY, maxY = math.huge, -math.huge
+    for j = 1, #xs do
+      local half = ((ps and ps[j]) and math.max(w, ps[j]) or w) / 2
+      local y = ys[j] or 0
+      add(e, xs[j] + half, y + half)
+      if y < minY then minY = y end
+      if y > maxY then maxY = y end
+    end
+    -- the stroke's vertical centre decides: descenders of the last line stay
+    -- above it, writing in the bottom margin goes below it
+    if belowY and #xs > 0 and (minY + maxY) / 2 > belowY then e.below = true end
+    e.count = e.count + 1
+  end
+  return e
+end
+
 local function autoCheck(reason)
   if state.busy or not CONFIG.autoGrow then return end
   state.busy = true
@@ -378,13 +530,25 @@ local function autoCheck(reason)
     if reason == "safety" and os.time() - state.lastPenUp < 3 then
       return -- the pen hook is working; nothing to do
     end
-    local e = layerExtent()
-    if e.count == 0 then return end
-    if reason ~= "pen" then
-      if e.sig == state.lastSig then return end
+    local e
+    if isFreeCanvas(page) then
+      e = layerExtent()
+      if e.count == 0 then return end
+      if reason ~= "pen" and e.sig == state.lastSig then return end
+      state.lastSig = e.sig
+    else
+      -- paper page: only strokes written since we last looked count, so
+      -- writing that was already there never makes the page grow
+      local sp = ruledSpacing(page)
+      local belowY
+      if sp then
+        local lastLine = RULED_HEADER + math.floor((page.pageHeight - RULED_HEADER - RULED_FOOTER) / sp) * sp
+        belowY = lastLine + sp / 4
+      end
+      e = newStrokesExtent(reason == "pen", belowY)
+      if not e then return end
     end
-    state.lastSig = e.sig
-    local grew, w, h = growIfNeeded(page, e.maxX, e.maxY)
+    local grew, w, h = growIfNeeded(page, e.maxX, e.maxY, e.below)
     if grew then
       log("grew (%s): %dx%d -> %dx%d  [content up to %.0f,%.0f; %d elements]",
           reason, page.pageWidth, page.pageHeight, w, h, e.maxX, e.maxY, e.count)
@@ -506,7 +670,19 @@ function infiniteCanvas_make()
     notify(T.pdf_page)
     return
   end
-  app.changeCurrentPageBackground(CONFIG.background)
+  local fmt = pageFormat(page)
+  if not isFreeCanvas(page) then
+    -- ruled, lined, graph, staves...: keep the paper, just mark/unmark it
+    local on = not hasMark(page)
+    app.changeCurrentPageBackground(fmt, configWithMark(page.pageTypeConfig, on))
+    setBaseline() -- what is already written never triggers growth
+    state.lastSig = nil
+    log("page %s %s", tostring(pageNo), on and "marked" or "unmarked")
+    if on and CONFIG.autoGrow then installAutoHooks() end
+    notify(on and T.marked or T.unmarked)
+    return
+  end
+  app.changeCurrentPageBackground(CONFIG.background, configWithMark(fmt == "dotted" and page.pageTypeConfig or "", true))
   local e = pageExtent()
   local w = math.max(CONFIG.initialWidth, page.pageWidth, e.maxX + CONFIG.edgeMargin)
   local h = math.max(CONFIG.initialHeight, page.pageHeight, e.maxY + CONFIG.edgeMargin)
@@ -533,25 +709,112 @@ end
 
 function infiniteCanvas_expandDown()
   local page = currentPage()
-  setSize(page.pageWidth, page.pageHeight + CONFIG.growStep)
+  local step = CONFIG.growStep
+  if not isFreeCanvas(page) then
+    local sp = ruledSpacing(page)
+    step = sp and (CONFIG.paperGrowLines * sp) or CONFIG.paperGrowY
+  end
+  setSize(page.pageWidth, snapHeight(page, page.pageHeight + step))
   state.lastSig = nil
 end
 
 function infiniteCanvas_expandRight()
   local page = currentPage()
-  setSize(page.pageWidth + CONFIG.growStep, page.pageHeight)
+  setSize(page.pageWidth + (isFreeCanvas(page) and CONFIG.growStep or CONFIG.paperGrowX), page.pageHeight)
   state.lastSig = nil
 end
 
-function infiniteCanvas_fit()
-  local e = pageExtent()
-  if e.count == 0 then
-    setSize(CONFIG.initialWidth, CONFIG.initialHeight)
-  else
-    setSize(math.max(CONFIG.minWidth, e.maxX + CONFIG.fitPadding),
-            math.max(CONFIG.minHeight, e.maxY + CONFIG.fitPadding))
+-- Paper widths (pt) in both orientations: A5, A4, A3, Letter, Legal, Tabloid.
+local PAPER_WIDTHS = { 419.53, 595.28, 841.89, 1190.55, 612, 792, 1008, 1224 }
+
+local function isPaperWidth(w)
+  for _, pw in ipairs(PAPER_WIDTHS) do
+    if math.abs(w - pw) <= 1 then return true end
   end
+  return false
+end
+
+local function pageKeyOf(doc)
+  return tostring(doc.xoppFilename or "") .. "#" .. tostring(doc.currentPage)
+end
+state.pageKey = function() return pageKeyOf(app.getDocumentStructure()) end
+
+-- Width and height of the default page template (Journal > Page Template),
+-- read from Xournal++'s settings.xml.
+local function templateSize()
+  if not app.getFolder then return nil end
+  local ok, cfg = pcall(app.getFolder, "config")
+  if not ok or type(cfg) ~= "string" then return nil end
+  local f = io.open(cfg .. "/settings.xml", "r")
+  if not f then return nil end
+  local xml = f:read("*a"); f:close()
+  local tpl = xml:match('name="pageTemplate"%s+value="([^"]*)"') or ""
+  local w, h = tpl:match("size=([%d%.]+)x([%d%.]+)")
+  if w then return tonumber(w), tonumber(h) end
+  return nil
+end
+
+-- The width a regular page should have after "fit page to content":
+-- its original width if the plugin resized it in this session, its current
+-- width if that is already a paper width, otherwise the smallest paper width
+-- (other pages of the document, page template in both orientations) that
+-- holds the content.
+local function paperWidthFor(page, contentRight)
+  local key = state.pageKey()
+  local orig = state.original[key]
+  if orig and isPaperWidth(orig.w) and orig.w >= contentRight then return orig.w end
+  if isPaperWidth(page.pageWidth) and page.pageWidth >= contentRight then return page.pageWidth end
+  local candidates = {}
+  local doc = app.getDocumentStructure()
+  for i, p in ipairs(doc.pages) do
+    if i ~= doc.currentPage and isPaperWidth(p.pageWidth) then candidates[#candidates + 1] = p.pageWidth end
+  end
+  local tw, th = templateSize()
+  if tw then candidates[#candidates + 1] = tw; candidates[#candidates + 1] = th end
+  local best
+  for _, c in ipairs(candidates) do
+    if c >= contentRight and (not best or c < best) then best = c end
+  end
+  if not best then -- nothing known: smallest standard paper width that fits
+    for _, c in ipairs(PAPER_WIDTHS) do
+      if c >= contentRight and (not best or c < best) then best = c end
+    end
+  end
+  return best
+end
+
+local function ruledFitHeight(page, maxY)
+  local spacing = ruledSpacing(page)
+  if not spacing then return nil end
+  -- line index just below the content, plus one free line
+  return ruledHeight(spacing, math.max(0, math.ceil((maxY - RULED_HEADER) / spacing)) + 1)
+end
+
+function infiniteCanvas_fit()
+  local page = currentPage()
+  local e = pageExtent()
+  if e.count == 0 then return end -- empty page: nothing to fit to
+  local pad = CONFIG.fitPadding
+  local canvas = isFreeCanvas(page) and isCanvasPage(page) and not hasPdfBackground(page)
+
+  -- height: end just below the content; on ruled/lined paper, end on a full
+  -- line followed by the paper's footer instead of cutting through it
+  local h = ruledFitHeight(page, e.maxY) or (e.maxY + pad)
+  h = math.max(CONFIG.minHeight, h)
+
+  -- width: canvas pages are trimmed to the content; regular pages too, but
+  -- never narrower than a normal sheet (or than they already are)
+  local w
+  if canvas then
+    w = math.max(CONFIG.minWidth, e.maxX + pad)
+  else
+    w = paperWidthFor(page, e.maxX) or (e.maxX + pad)
+    -- never widen a page whose content already fits (custom narrow pages)
+    if page.pageWidth >= e.maxX and w > page.pageWidth then w = page.pageWidth end
+  end
+  setSize(w, h)
   state.lastSig = nil
+  log("fit: %dx%d -> %dx%d", page.pageWidth, page.pageHeight, math.floor(w), math.floor(h))
 end
 
 function infiniteCanvas_toggleAuto()

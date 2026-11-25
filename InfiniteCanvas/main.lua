@@ -71,9 +71,10 @@ local CONFIG = {
   autoGrow         = true,  -- auto-grow starts enabled
   autoGrowDotted   = true,  -- dotted pages always auto-grow; other pages only
                             -- after Ctrl+Shift+N marks them (marker saved in the file)
-  autoGrowPdfPages = false, -- experimental: also auto-grow pages with a PDF
-                            -- background (the PDF is not stretched; the new
-                            -- area is left unpainted)
+  autoGrowPdfPages = false, -- auto-grow every PDF page, not only the ones marked
+                            -- with Ctrl+Shift+N
+  pdfExtensionStyle = "blank", -- look of the area added to a PDF page:
+                            -- "blank", "lined" or "dotted" (also in the Plugin menu)
   keepZoom         = true,  -- keep the zoom when the width grows
   penUpDelayMs     = 120,   -- wait after pen-up (stroke already stored)
   pollIntervalMs   = 1500,  -- polling interval when GTK can't be reached
@@ -186,9 +187,16 @@ local STRINGS = {
     marked      = "This page will now grow by itself as you write near its right or bottom edge.\n\n"
                .. "Its paper (lines, margins, size) was kept. Press Ctrl+Shift+N again to turn this off.",
     unmarked    = "This page no longer grows by itself.",
-    pdf_page    = "This page has a PDF background, so it was not turned into a dotted canvas "
-               .. "(that would remove the PDF).\n\nUse Ctrl+Shift+M / Ctrl+Shift+B to add space "
-               .. "beside or below the PDF.",
+    pdf_marked  = "This PDF page will now grow by itself as you write near its right or bottom edge.\n\n"
+               .. "The PDF is not touched: the added area is drawn on a layer of its own (\"PDF extension\"), "
+               .. "blank by default. Change it to lined or dotted in the Plugin menu. "
+               .. "Press Ctrl+Shift+N again to turn growing off.",
+    pdf_unmarked = "This PDF page no longer grows by itself.",
+    pdf_only    = "This option is for pages with a PDF background.",
+    ext_layer   = "PDF extension",
+    menu_ext_blank  = "Infinite Canvas: PDF extension blank",
+    menu_ext_lined  = "Infinite Canvas: PDF extension lined",
+    menu_ext_dotted = "Infinite Canvas: PDF extension dotted",
   },
   pt = {
     menu_make   = "Canvas infinito: transformar página atual em canvas",
@@ -206,9 +214,16 @@ local STRINGS = {
     marked      = "Esta página agora cresce sozinha quando você escreve perto da borda direita ou de baixo.\n\n"
                .. "O papel (linhas, margens, tamanho) foi mantido. Aperte Ctrl+Shift+N de novo para desligar.",
     unmarked    = "Esta página não cresce mais sozinha.",
-    pdf_page    = "Esta página tem fundo de PDF, então não foi transformada em canvas pontilhado "
-               .. "(isso apagaria o PDF).\n\nUse Ctrl+Shift+M / Ctrl+Shift+B para abrir espaço "
-               .. "ao lado ou abaixo do PDF.",
+    pdf_marked  = "Esta página de PDF agora cresce sozinha quando você escreve perto da borda direita ou de baixo.\n\n"
+               .. "O PDF não é alterado: a área nova fica numa camada própria (\"Extensão do PDF\"), "
+               .. "lisa por padrão. Troque para pautada ou pontilhada no menu Plugin. "
+               .. "Aperte Ctrl+Shift+N de novo para desligar.",
+    pdf_unmarked = "Esta página de PDF não cresce mais sozinha.",
+    pdf_only    = "Esta opção é para páginas com fundo de PDF.",
+    ext_layer   = "Extensão do PDF",
+    menu_ext_blank  = "Canvas infinito: extensão do PDF lisa",
+    menu_ext_lined  = "Canvas infinito: extensão do PDF pautada",
+    menu_ext_dotted = "Canvas infinito: extensão do PDF pontilhada",
   },
 }
 
@@ -287,8 +302,10 @@ local function isFreeCanvas(page)
   return fmt == "dotted" or fmt == "plain"
 end
 
+local pdfIsMarked -- defined with the PDF extension code below
+
 local function isCanvasPage(page)
-  if hasPdfBackground(page) then return CONFIG.autoGrowPdfPages end
+  if hasPdfBackground(page) then return CONFIG.autoGrowPdfPages or pdfIsMarked() end
   if hasMark(page) then return true end
   return CONFIG.autoGrowDotted and pageFormat(page) == "dotted"
 end
@@ -376,6 +393,60 @@ local function layerExtent(e)
 end
 
 -- Extent over all layers of the page (used by the manual actions).
+local isExtensionLayer
+
+-- PDF extension layer: white rectangles over the area added to a PDF page
+-- (plus lines or dots). The rectangles are pure white; their border width
+-- is the tag: 0.21 + 0.01 * (style index (0 blank, 1 lined, 2 dotted) + 4 if
+-- the page is marked to grow by itself). The right rectangle starts at the
+-- PDF width and the bottom one at the PDF height, so the original PDF size
+-- is stored too.
+local EXT_WHITE, EXT_W0 = 0xFFFFFF, 0.21
+local EXT_STYLES = { "blank", "lined", "dotted" }
+
+local function decodeTag(color, width)
+  local c = (tonumber(color) or 0) & 0xFFFFFF
+  local v
+  if c == EXT_WHITE then
+    local w = tonumber(width) or 0
+    v = math.floor((w - EXT_W0) * 100 + 0.5)
+    if math.abs(w - (EXT_W0 + v / 100)) > 0.002 then return nil end
+  elseif c >= 0xFFFFF0 and c <= 0xFFFFF7 then
+    v = c - 0xFFFFF0 -- tag of the first test build (slightly tinted)
+  end
+  if not v or v < 0 or v > 7 then return nil end
+  return EXT_STYLES[(v % 4) + 1], v >= 4
+end
+
+-- Reads the tag rectangles of the current layer; nil if it isn't the extension layer.
+local function readExtension()
+  local info
+  for _, s in ipairs(getList("getStrokes")) do
+    local style, auto = decodeTag(s.color, s.width)
+    if style and s.x and #s.x >= 4 then -- (fill is not reported by every version)
+      info = info or { style = style, auto = auto }
+      local minX, minY = math.huge, math.huge
+      for i = 1, #s.x do
+        if s.x[i] < minX then minX = s.x[i] end
+        if s.y[i] < minY then minY = s.y[i] end
+      end
+      local maxX, maxY = -math.huge, -math.huge
+      for i = 1, #s.x do
+        if s.x[i] > maxX then maxX = s.x[i] end
+        if s.y[i] > maxY then maxY = s.y[i] end
+      end
+      info.size = info.size or { w = 0, h = 0 }
+      info.size.w = math.max(info.size.w, maxX)
+      info.size.h = math.max(info.size.h, maxY)
+      if minY < 0.01 and minX > 0.01 then info.pdfW = minX end   -- right rectangle
+      if minX < 0.01 and minY > 0.01 then info.pdfH = minY end   -- bottom rectangle
+    end
+  end
+  return info
+end
+
+isExtensionLayer = function() return readExtension() ~= nil end
+
 local function pageExtent()
   local page = currentPage()
   local cur = page and page.currentLayer or 0
@@ -385,10 +456,128 @@ local function pageExtent()
   end
   local e = newExtent()
   for i = 1, n do
-    if pcall(app.setCurrentLayer, i, false) then layerExtent(e) end
+    if pcall(app.setCurrentLayer, i, false) and not isExtensionLayer() then layerExtent(e) end
   end
   pcall(app.setCurrentLayer, cur, false)
   return e
+end
+
+-- Finds the extension layer of the current page: {index, style, auto, pdfW, pdfH} or nil.
+local function findExtLayer()
+  local page = currentPage()
+  if not page or not app.setCurrentLayer then return nil end
+  local cur, n = page.currentLayer, #page.layers
+  local found
+  for i = 1, n do
+    if pcall(app.setCurrentLayer, i, false) then
+      local info = readExtension()
+      if info then info.index = i; found = info; break end
+    end
+  end
+  pcall(app.setCurrentLayer, cur, false)
+  return found
+end
+
+local function pageKeyNow()
+  local doc = app.getDocumentStructure()
+  return tostring(doc.xoppFilename or "") .. "#" .. tostring(doc.currentPage)
+end
+
+-- Is the current PDF page marked to grow? Cached per page for the session.
+pdfIsMarked = function()
+  state.pdfMark = state.pdfMark or {}
+  local key = pageKeyNow()
+  if state.pdfMark[key] == nil then
+    local ext = findExtLayer()
+    state.pdfMark[key] = ext and ext.auto or false
+  end
+  return state.pdfMark[key]
+end
+
+local function rectStroke(x0, y0, x1, y1, tag)
+  return { x = { x0, x1, x1, x0, x0 }, y = { y0, y0, y1, y1, y0 },
+           width = EXT_W0 + tag / 100, color = EXT_WHITE, fill = 255, tool = "pen" }
+end
+
+-- addStrokes and layer changes don't repaint the page by themselves
+local function repaint()
+  if app.refreshPage then pcall(app.refreshPage) end
+end
+
+-- Lines/dots like Xournal++'s own lined (80 + i*24, 60 pt footer) and dotted
+-- (14.17 pt grid, 1.5 pt dots) paper, limited to one area of the extension.
+local function patternStrokes(style, x0, y0, x1, y1, pageH, out)
+  if x1 - x0 < 0.5 or y1 - y0 < 0.5 then return end
+  if style == "lined" then
+    local i = math.max(0, math.ceil((y0 - 80) / 24))
+    while 80 + i * 24 <= math.min(y1, pageH - 60) do
+      local y = 80 + i * 24
+      out[#out + 1] = { x = { x0, x1 }, y = { y, y }, width = 0.5, color = 0x40a0ff, tool = "pen" }
+      i = i + 1
+    end
+  elseif style == "dotted" then
+    local step, r = 14.17, 0.75
+    for gx = math.max(1, math.ceil(x0 / step)), math.floor((x1 - r) / step) do
+      for gy = math.max(1, math.ceil(y0 / step)), math.floor((y1 - r) / step) do
+        local x, y = gx * step, gy * step
+        out[#out + 1] = { x = { x, x }, y = { y, y }, width = 1.5, color = 0xbdbdbd, tool = "pen" }
+      end
+    end
+  end
+end
+
+-- Deletes and redraws the extension layer of the current PDF page for its
+-- current size. info = {pdfW, pdfH, style, auto}. The layer is removed when
+-- the page has no extension and isn't marked.
+local function refreshExtension(info, force)
+  local page = currentPage()
+  local userLayer = page.currentLayer
+  local old = findExtLayer()
+  if old and not force and old.style == info.style and old.auto == info.auto
+     and old.size and math.abs(old.size.w - page.pageWidth) < 0.01
+     and math.abs(old.size.h - page.pageHeight) < 0.01 then
+    repaint() -- already drawn like this: nothing to redo
+    return
+  end
+  if old then
+    pcall(app.setCurrentLayer, old.index, false)
+    if not pcall(app.activateAction, "layer-delete") then app.layerAction("ACTION_DELETE_LAYER") end
+    if userLayer > old.index then userLayer = userLayer - 1 end
+    page = currentPage()
+  end
+  local W, H = page.pageWidth, page.pageHeight
+  local extended = W > info.pdfW + 0.01 or H > info.pdfH + 0.01
+  if extended or info.auto then
+    pcall(app.setCurrentLayer, 1, false)
+    app.activateAction("layer-new-below-current")
+    pcall(app.setCurrentLayer, 1, false) -- the new layer is the bottom one
+    if app.setCurrentLayerName then pcall(app.setCurrentLayerName, T.ext_layer) end
+    local idx = 0
+    for i, st in ipairs(EXT_STYLES) do if st == info.style then idx = i - 1 end end
+    local tag = idx + (info.auto and 4 or 0)
+    local strokes = { rectStroke(info.pdfW, 0, math.max(W, info.pdfW), H, tag),
+                      rectStroke(0, info.pdfH, W, math.max(H, info.pdfH), tag) }
+    patternStrokes(info.style, info.pdfW, 0, W, H, H, strokes)          -- beside the PDF
+    patternStrokes(info.style, 0, info.pdfH, info.pdfW, H, H, strokes)  -- below the PDF
+    app.addStrokes({ strokes = strokes, allowUndoRedoAction = "grouped" })
+    userLayer = userLayer + 1
+  end
+  pcall(app.setCurrentLayer, math.max(1, userLayer), false)
+  repaint()
+  state.pdfMark = state.pdfMark or {}
+  state.pdfMark[pageKeyNow()] = info.auto and true or false
+  log("PDF extension: %s, pdf %.0fx%.0f, page %.0fx%.0f, auto=%s", info.style, info.pdfW, info.pdfH, W, H, tostring(info.auto))
+end
+
+-- Extension info of the current PDF page, or the defaults for a page that has none.
+local function pdfInfo(page)
+  local ext = findExtLayer()
+  if ext then
+    ext.pdfW = ext.pdfW or page.pageWidth
+    ext.pdfH = ext.pdfH or page.pageHeight
+    return ext
+  end
+  return { pdfW = page.pageWidth, pdfH = page.pageHeight, style = CONFIG.pdfExtensionStyle, auto = false }
 end
 
 local function setSize(w, h)
@@ -397,6 +586,12 @@ local function setSize(w, h)
     return false
   end
   local page = currentPage()
+  local pdf = page and hasPdfBackground(page) and pdfInfo(page) or nil
+  if pdf then
+    -- never crop the PDF itself
+    w = math.max(w, pdf.pdfW)
+    h = math.max(h, pdf.pdfH)
+  end
   local widthChanged = page and math.abs(w - page.pageWidth) > 0.01
   local zoom = nil
   if CONFIG.keepZoom and widthChanged then
@@ -425,6 +620,7 @@ local function setSize(w, h)
   if page and math.abs(w - page.pageWidth) < 0.01 then w = page.pageWidth else w = r2(w) end
   if page and math.abs(h - page.pageHeight) < 0.01 then h = page.pageHeight else h = r2(h) end
   app.setPageSize(w, h)
+  if pdf then pcall(refreshExtension, pdf) end
 
   if zoom and app.setZoom then
     pcall(app.setZoom, zoom)
@@ -666,8 +862,13 @@ end
 function infiniteCanvas_make()
   local page, pageNo = currentPage()
   if hasPdfBackground(page) then
-    -- changing the background would drop the PDF
-    notify(T.pdf_page)
+    -- the PDF background is never changed: mark/unmark the page instead
+    local info = pdfInfo(page)
+    info.auto = not info.auto
+    refreshExtension(info)
+    setBaseline()
+    if info.auto and CONFIG.autoGrow then installAutoHooks() end
+    notify(info.auto and T.pdf_marked or T.pdf_unmarked)
     return
   end
   local fmt = pageFormat(page)
@@ -793,7 +994,16 @@ end
 function infiniteCanvas_fit()
   local page = currentPage()
   local e = pageExtent()
-  if e.count == 0 then return end -- empty page: nothing to fit to
+  if e.count == 0 then
+    -- empty PDF page: drop the extension and go back to the PDF's own size
+    if hasPdfBackground(page) then
+      local info = pdfInfo(page)
+      if page.pageWidth > info.pdfW + 0.01 or page.pageHeight > info.pdfH + 0.01 then
+        setSize(info.pdfW, info.pdfH)
+      end
+    end
+    return -- empty page: nothing to fit to
+  end
   local pad = CONFIG.fitPadding
   local canvas = isFreeCanvas(page) and isCanvasPage(page) and not hasPdfBackground(page)
 
@@ -805,7 +1015,10 @@ function infiniteCanvas_fit()
   -- width: canvas pages are trimmed to the content; regular pages too, but
   -- never narrower than a normal sheet (or than they already are)
   local w
-  if canvas then
+  if hasPdfBackground(page) then
+    w = e.maxX + pad   -- setSize keeps at least the PDF size
+    h = math.max(CONFIG.minHeight, e.maxY + pad)
+  elseif canvas then
     w = math.max(CONFIG.minWidth, e.maxX + pad)
   else
     w = paperWidthFor(page, e.maxX) or (e.maxX + pad)
@@ -816,6 +1029,19 @@ function infiniteCanvas_fit()
   state.lastSig = nil
   log("fit: %dx%d -> %dx%d", page.pageWidth, page.pageHeight, math.floor(w), math.floor(h))
 end
+
+local function setExtensionStyle(style)
+  local page = currentPage()
+  if not hasPdfBackground(page) then notify(T.pdf_only) return end
+  local info = pdfInfo(page)
+  info.style = style
+  CONFIG.pdfExtensionStyle = style -- also used for PDF pages extended later this session
+  refreshExtension(info)
+end
+
+function infiniteCanvas_extBlank() setExtensionStyle("blank") end
+function infiniteCanvas_extLined() setExtensionStyle("lined") end
+function infiniteCanvas_extDotted() setExtensionStyle("dotted") end
 
 function infiniteCanvas_toggleAuto()
   CONFIG.autoGrow = not CONFIG.autoGrow
@@ -856,6 +1082,9 @@ function initUi()
                    accelerator = "<Control><Shift>j" })
   app.registerUi({ menu = T.menu_toggle, callback = "infiniteCanvas_toggleAuto",
                    accelerator = "<Control><Shift>u" })
+  app.registerUi({ menu = T.menu_ext_blank, callback = "infiniteCanvas_extBlank" })
+  app.registerUi({ menu = T.menu_ext_lined, callback = "infiniteCanvas_extLined" })
+  app.registerUi({ menu = T.menu_ext_dotted, callback = "infiniteCanvas_extDotted" })
 
   local dir = pluginDir()
   log("---- initUi (%s; language %s; folder via %s: %s)", _VERSION, lang, PLUGIN_DIR_HOW, tostring(dir))

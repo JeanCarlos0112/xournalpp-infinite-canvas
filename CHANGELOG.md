@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.2.0 — 2026-11-24
+
+### Added
+
+- **Growing PDF pages.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> on a page with a PDF background no longer refuses. It marks the page to grow by itself, and pressing it again removes the mark. The PDF itself is never changed, stretched or cropped.
+  - The area added beside or below the PDF is painted on a layer of its own at the bottom of the page, named **"PDF extension"** ("Extensão do PDF" in Portuguese). Your own layers stay above it and the layer you were writing on stays selected.
+  - The extension is **blank (white)** by default. It can be switched to **lined** (same lines as Xournal++'s lined paper: 24 pt spacing, 60 pt footer) or **dotted** (same grid as the dotted canvas) with three new items in the Plugin menu. The choice is kept for the page and used for PDF pages extended later in the same session.
+  - A marked PDF page grows in paper-like steps: 200 pt to the right, 240 pt downwards, when a stroke gets within 8 pt of the edge. Writing that was already on the page doesn't make it grow.
+  - The mark, the style and the original PDF size are stored in the extension layer itself, so everything survives saving and reopening the `.xopp` file. The layer is printed and exported like any other layer, so the extension is white (or lined/dotted) in exported PDFs too.
+- New option `pdfExtensionStyle` (`"blank"`, `"lined"` or `"dotted"`).
+- `tests/test_pdf_extension.lua` and `tests/test_pdf_edge_cases.lua`.
+
+### Changed
+
+- **Fit page to content** on PDF pages shrinks the page to the content but never below the PDF's own size, and redraws the extension layer for the new size. When nothing is left outside the PDF, the layer is removed (unless the page is marked). On a PDF page with nothing written, fit goes back to the PDF's size.
+- Manual expand (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> / <kbd>M</kbd>) on a PDF page now paints the new area instead of leaving it grey.
+- Fit and auto-grow ignore the extension layer when measuring the content.
+- `autoGrowPdfPages` now means "grow every PDF page, marked or not".
+
+### Fixed
+
+- The area added to a PDF page was left unpainted (grey).
+- Choosing the extension style the page already has no longer redraws it. Switching styles many times never stacks extension layers.
+- The page is repainted after every change to the extension. Without this Xournal++ showed the new area grey, or only partly drawn, until you wrote over it.
+
+### Testing
+
+- Automated: 8 test files in `tests/`, all passing. New ones cover:
+  - marking and unmarking PDF pages;
+  - growing to the right and downwards;
+  - the three styles: lines above the footer, dots only inside the new area, nothing drawn on a strip narrower than 0.5 pt;
+  - repeating the same style and alternating styles, with no stacked layers;
+  - files from the first test build;
+  - documents with several layers: the extension goes to the bottom, the user's layer stays selected, and content on every layer counts for fit;
+  - landscape PDFs and empty PDF pages;
+  - a white rectangle drawn by the user, which is not mistaken for the extension;
+  - the style items on pages without a PDF.
+- Manual, on Windows 11 with Xournal++ 1.3.4: on a PDF page, marking it, auto-grow, and the three styles. Found and fixed during that test: the tinted colour, missing repaint and stacked redraws.
+- Not tested yet: Linux and macOS; undo/redo across many extension redraws.
+
 ## 1.1.0 — 2026-11-24
 
 ### Added

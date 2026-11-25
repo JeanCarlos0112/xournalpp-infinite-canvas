@@ -34,7 +34,7 @@ local function fresh(langNames, opts)
     setPageSize = function(w, h) page.pageWidth, page.pageHeight = w, h end,
     getStrokes = function() return strokes end,
     openDialog = function(m) dialogs[#dialogs+1] = m end,
-    registerUi = function(o) menus[#menus+1] = o.menu; assert(not o.accelerator:find("Alt")) end,
+    registerUi = function(o) menus[#menus+1] = o.menu; assert(not (o.accelerator or ""):find("Alt")) end,
   }
   local run = function(maxMs)
     local keep = {}
@@ -58,13 +58,9 @@ local other = fresh({ "de_DE", "de", "C" })
 assert(other.menus[1]:find("^Infinite Canvas"), "fallback inglês")
 print("idioma: OK  (" .. pt.menus[1] .. ")")
 
--- página com PDF: make não troca o fundo e avisa
+-- página com PDF (sem marca; marcação e camada de extensão: test_pdf_extension.lua)
 local pdf = fresh({ "pt_BR" }, { pdf = 1, fmt = "pdf" })
-infiniteCanvas_make()
-assert(pdf.page.pageTypeFormat == "pdf", "fundo do PDF preservado")
-assert(pdf.page.pageWidth == 595, "não redimensiona no make")
-assert(#pdf.dialogs == 1 and pdf.dialogs[1]:find("PDF"), "avisou")
--- auto não cresce PDF por padrão
+-- auto não cresce PDF não marcado
 pdf.strokes[1] = { x = {590}, y = {100}, width = 2 }
 pdf.penUp(); pdf.run(500)
 assert(pdf.page.pageWidth == 595, "auto ignora PDF por padrão")

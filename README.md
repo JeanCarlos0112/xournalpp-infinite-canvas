@@ -35,7 +35,7 @@ For PDF annotation with adjustable margins, see also [IncreaseAndDecreasePageDim
 
 | Shortcut | Action |
 |---|---|
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> | Plain page: turn it into a dotted canvas. Lined, graph, other paper or PDF page: mark it to grow by itself (press again to unmark) |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> | Plain or dotted page: turn it into a growing dotted canvas. Lined, graph, other paper or PDF page: mark it to grow by itself. Press again to unmark |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | Expand downwards now |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> | Expand to the right now ("more width") |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> | Fit the page to its content (handy before exporting) |
@@ -43,7 +43,7 @@ For PDF annotation with adjustable margins, see also [IncreaseAndDecreasePageDim
 
 All actions are also in the **Plugin** menu, which also has *PDF extension blank / lined / dotted*. Toolbar buttons are available in the toolbar customization dialog as `INFINITE_CANVAS_MAKE`, `INFINITE_CANVAS_DOWN` and `INFINITE_CANVAS_RIGHT`.
 
-Auto-grow acts on **dotted** pages and on paper or PDF pages you marked with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd>; every other page behaves like a normal notebook page. The interface is in English, or in Portuguese when your system language is Portuguese.
+Auto-grow acts only on pages you turned into a canvas or marked with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd>; every other page, including dotted pages from your page template, behaves like a normal notebook page. Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> again on a marked page to stop it growing. The interface is in English, or in Portuguese when your system language is Portuguese.
 
 ### Lined and other paper pages
 
@@ -90,7 +90,7 @@ Edit the `CONFIG` table at the top of `InfiniteCanvas/main.lua`:
 | `paperGrowY` | `240` | Marked graph/other paper page: how much it grows downwards (pt) |
 | `fitPadding` | `40` | Space kept below/right of the last stroke by *fit page to content* (pt) |
 | `minWidth`, `minHeight` | `300`, `200` | Smallest size *fit page to content* produces (pt) |
-| `autoGrowDotted` | `true` | Dotted pages always auto-grow (set `false` to require the mark) |
+| `autoGrowDotted` | `false` | `true` makes every dotted page auto-grow, even unmarked ones (e.g. from a dotted page template) |
 | `keepZoom` | `true` | Keep the zoom when the width grows (switches *Zoom → Fit* off) |
 | `autoGrowPdfPages` | `false` | Auto-grow every PDF page, not only the ones you marked |
 | `pdfExtensionStyle` | `"blank"` | Look of the area added to PDF pages: `"blank"`, `"lined"` or `"dotted"` |
@@ -142,5 +142,7 @@ Plugin para o Xournal++ que faz as páginas **crescerem conforme você escreve**
 - Numa página com fundo de PDF, o PDF não é alterado: a área nova fica numa camada própria ("Extensão do PDF"), branca por padrão, e pode ser trocada para pautada ou pontilhada no menu Plugin.
 - <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> ajusta a página ao conteúdo, respeitando o tamanho do papel, as linhas e o tamanho do PDF.
 - <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> e <kbd>M</kbd> expandem para baixo e para a direita; <kbd>U</kbd> liga ou desliga o crescimento automático (todos com <kbd>Ctrl</kbd>+<kbd>Shift</kbd>).
+
+Só crescem as páginas que você transformou ou marcou com <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd>; páginas pontilhadas do seu modelo de página continuam normais.
 
 A interface aparece em português automaticamente quando o sistema está em português.

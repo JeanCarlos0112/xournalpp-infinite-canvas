@@ -53,7 +53,18 @@ infiniteCanvas_expandDown(); assert((page.pageHeight - 141) % 30 == 0, page.page
 page.pageTypeFormat, page.pageTypeConfig, page.pageWidth, page.pageHeight = "plain", "", 595.28, 841.89
 strokes = {}
 infiniteCanvas_make(); assert(page.pageTypeFormat == "dotted" and page.pageTypeConfig == "icanvas=1" and page.pageWidth == 1200)
--- pontilhado antigo sem marca continua crescendo (compatibilidade)
-page.pageTypeConfig = ""; strokes[1] = { x = {1150}, y = {100}, width = 2 }
+-- Ctrl+Shift+N de novo num canvas marcado desmarca (tamanho e fundo ficam)
+infiniteCanvas_make(); assert(page.pageTypeFormat == "dotted" and page.pageTypeConfig == "" and page.pageWidth == 1200)
+infiniteCanvas_make(); assert(page.pageTypeConfig == "icanvas=1" and page.pageWidth == 1200, "marca de novo")
+
+-- pontilhada do modelo de página (A4, sem marca) NÃO vira canvas infinito
+dofile(MAIN); initUi(); run() -- sessão nova (arquivo reaberto)
+page.pageTypeFormat, page.pageTypeConfig, page.pageWidth, page.pageHeight = "dotted", "", 841.89, 595.28
+strokes = { { x = {838}, y = {590}, width = 2 } }
+gesture.on_drag_end(); run(); assert(page.pageWidth == 841.89 and page.pageHeight == 595.28, "modelo pontilhado nao cresce")
+
+-- canvas antigo da 1.0 (sem marca, 1200 x 1600) reaberto continua crescendo
+page.pageWidth, page.pageHeight = 1200, 1600
+strokes = { { x = {1150}, y = {100}, width = 2 } }
 gesture.on_drag_end(); run(); assert(page.pageWidth == 2000, page.pageWidth)
 print("OK")

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.1 — 2026-11-24
+
+### Fixed
+
+- **Dotted pages no longer grow unless you ask.** Until now every dotted page was treated as an infinite canvas. If Xournal++'s default page template is dotted, a new notebook already opened growing. Now a dotted page grows only after you mark it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd>, the same as lined pages. The plugin never changes the page template itself.
+  - Canvases created by version 1.0, which have no mark, keep growing. They are recognised because they don't have a standard sheet size (A5, A4, A3, Letter, Legal, Tabloid). A dotted A4 page from a template is left alone.
+  - <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> on a marked dotted canvas now unmarks it, keeping its size and dots. Before, it did nothing.
+
+### Changed
+
+- `autoGrowDotted` now defaults to `false`. Set it to `true` for the old behaviour, where every dotted page grows.
+
+### Testing
+
+- `test_mark_paper_pages.lua` covers three new cases:
+  - a dotted A4 template page in a fresh session, which must not grow;
+  - an unmarked 1200 × 1600 canvas from 1.0, which keeps growing;
+  - unmarking and re-marking a dotted canvas.
+- All 8 test files pass.
+
 ## 1.2.0 — 2026-11-24
 
 ### Added

@@ -69,8 +69,9 @@ local CONFIG = {
   -- regular (non-canvas) pages keep their paper width when fitted; see paperWidthFor()
   background       = "dotted",
   autoGrow         = true,  -- auto-grow starts enabled
-  autoGrowDotted   = true,  -- dotted pages always auto-grow; other pages only
-                            -- after Ctrl+Shift+N marks them (marker saved in the file)
+  autoGrowDotted   = false, -- true: every dotted page auto-grows. false: only
+                            -- pages marked with Ctrl+Shift+N (marker saved in
+                            -- the file), so a dotted page template stays normal
   autoGrowPdfPages = false, -- auto-grow every PDF page, not only the ones marked
                             -- with Ctrl+Shift+N
   pdfExtensionStyle = "blank", -- look of the area added to a PDF page:
@@ -304,10 +305,30 @@ end
 
 local pdfIsMarked -- defined with the PDF extension code below
 
+-- Standard sheets (A5, A4, A3, Letter, Legal, Tabloid), either orientation.
+local PAPER_SIZES = { {419.53, 595.28}, {595.28, 841.89}, {841.89, 1190.55},
+                      {612, 792}, {612, 1008}, {792, 1224} }
+
+local function isPaperSize(w, h)
+  for _, p in ipairs(PAPER_SIZES) do
+    if (math.abs(w - p[1]) < 1 and math.abs(h - p[2]) < 1)
+       or (math.abs(w - p[2]) < 1 and math.abs(h - p[1]) < 1) then return true end
+  end
+  return false
+end
+
 local function isCanvasPage(page)
   if hasPdfBackground(page) then return CONFIG.autoGrowPdfPages or pdfIsMarked() end
   if hasMark(page) then return true end
-  return CONFIG.autoGrowDotted and pageFormat(page) == "dotted"
+  if pageFormat(page) ~= "dotted" then return false end
+  if CONFIG.autoGrowDotted then return true end
+  -- canvases made by version 1.0 have no mark; a dotted page that isn't a
+  -- standard sheet (and wasn't one before the plugin resized it in this
+  -- session) is one of them. Dotted pages from a template stay normal.
+  if isPaperSize(page.pageWidth, page.pageHeight) then return false end
+  local key = state.pageKey and state.pageKey()
+  local orig = key and state.original[key]
+  return not (orig and isPaperSize(orig.w, orig.h))
 end
 
 -- Ruled/lined paper (Xournal++ 1.3): lines at 80 + i * spacing, no lines in
@@ -881,6 +902,14 @@ function infiniteCanvas_make()
     log("page %s %s", tostring(pageNo), on and "marked" or "unmarked")
     if on and CONFIG.autoGrow then installAutoHooks() end
     notify(on and T.marked or T.unmarked)
+    return
+  end
+  if fmt == "dotted" and hasMark(page) then
+    -- marked dotted canvas: unmark it (size and background stay)
+    app.changeCurrentPageBackground(fmt, configWithMark(page.pageTypeConfig, false))
+    state.lastSig = nil
+    log("page %s unmarked", tostring(pageNo))
+    notify(T.unmarked)
     return
   end
   app.changeCurrentPageBackground(CONFIG.background, configWithMark(fmt == "dotted" and page.pageTypeConfig or "", true))

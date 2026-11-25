@@ -30,7 +30,7 @@ local function fresh(langNames, opts)
   end
   app = {
     getDocumentStructure = function() return { currentPage = 1, pages = { page } } end,
-    changeCurrentPageBackground = function(bg) page.pageTypeFormat = bg end,
+    changeCurrentPageBackground = function(bg, cfg) page.pageTypeFormat = bg; page.pageTypeConfig = cfg or "" end,
     setPageSize = function(w, h) page.pageWidth, page.pageHeight = w, h end,
     getStrokes = function() return strokes end,
     openDialog = function(m) dialogs[#dialogs+1] = m end,
